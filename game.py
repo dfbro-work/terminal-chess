@@ -6,7 +6,8 @@ import sys
 import time
 
 load_dotenv()
-selected_model = os.getenv("MODEL")
+primary_model = os.getenv("MODEL")
+secondary_model = os.getenv("SECONDARY_MODEL")
 
 client = anthropic.Anthropic()
 
@@ -15,21 +16,26 @@ def menu_loop():
     "entry": "------------Welcome to Terminal Chess!------------",
     "barrier": "***********************************************",
     "op_1": "1. Find an opponent online.",
-    "op_2": "2. Play locally against a LLM."
+    "op_2": "2. Play locally against a LLM.",
+    "op_3": "3. Pit 2 LLMs against each other."
   }
+
   for entry in menu_dict.values():
     print(entry)
   
   user_selection = input()
-  while user_selection not in ['1', '2']:
+  while user_selection not in ['1', '2', '3']:
     user_selection = input("Please select a valid option!")
     print(menu_dict['op_1'])
     print(menu_dict['op_2'])
+    print(menu_dict['op_3'])
 
   if user_selection == '1':
     game_result = run_game()
   elif user_selection == '2':
     game_result = run_LLM_game()
+  elif user_selection == '3':
+    game_result = spectate_LLM_game()
 
   play_again_input = input("Thank you for playing! Would you like to play again? (Y/N)")
   if play_again_input.lower() == 'y':
@@ -43,22 +49,64 @@ def run_game():
   return 0
 
 
-def gen_llm_move(board_state, side):
-  prompt = f"You are playing a chess game on side: {side}"
-  if len(board_state.move_stack) == 0:
-    prompt += "This is the first move."
-  else:
-    prompt += f"The last move is {board_state.peek()}"
-  prompt += f"The current state of the board is:\n{board_state}\n"
-  prompt += "Generate a move in the form of chess algebraic notation for your next move, and nothing else."  
-  
-  attempt_count = 0 
+def gen_llm_move(board_state, side, given_model):
+  base_prompt = f"You are playing a chess game on side: {side}. "
 
-  while attempt_count < 3: # Set a maximum attempt count to prevent wasting tokens on too many different attempts.
+  # Build list of this side's current pieces
+  is_white = (side.lower() == 'white')
+  piece_map = board_state.piece_map()
+
+  pieces = {}
+  for square, piece in piece_map.items():
+    if piece.color == chess.WHITE and is_white:
+      piece_name = piece.symbol().upper()
+      square_name = chess.square_name(square)
+      if piece_name not in pieces:
+        pieces[piece_name] = []
+      pieces[piece_name].append(square_name)
+    elif piece.color == chess.BLACK and not is_white:
+      piece_name = piece.symbol().lower()
+      square_name = chess.square_name(square)
+      if piece_name not in pieces:
+        pieces[piece_name] = []
+      pieces[piece_name].append(square_name)
+
+  if pieces:
+    piece_list = []
+    for piece_type, squares in sorted(pieces.items()):
+      piece_list.append(f"{piece_type}: {', '.join(sorted(squares))}")
+    base_prompt += f"Your current pieces: {'; '.join(piece_list)}. Do not move any pieces that aren't in this list."
+
+  # Build list of this side's previous moves
+  if len(board_state.move_stack) > 0:
+    # White plays on even indices (0, 2, 4...), black on odd (1, 3, 5...)
+    start_index = 0 if is_white else 1
+
+    side_moves = []
+    for i in range(start_index, len(board_state.move_stack), 2):
+      move_number = (i // 2) + 1
+      side_moves.append(f"{move_number}. {board_state.move_stack[i].uci()}")
+
+    if side_moves:
+      base_prompt += f"Your previous moves: {', '.join(side_moves)}. "
+
+    base_prompt += f"The last move played was {board_state.peek()}. "
+  else:
+    base_prompt += "This is the first move. "
+
+  base_prompt += f"The current state of the board is:\n{board_state}\n"
+  base_prompt += "Generate a move in the form of chess algebraic notation for your next move, and nothing else."
+
+  attempt_count = 0
+  error_feedback = ""
+
+  while attempt_count < 8: # Set a maximum attempt count to prevent wasting tokens on too many different attempts.
     attempt_count += 1
+    prompt = base_prompt + error_feedback
+
     try:
       model_resp = client.messages.create(
-        model = selected_model,
+        model = given_model,
         max_tokens = 10,
         messages = [
           {'role': 'user', 'content': prompt}
@@ -71,14 +119,21 @@ def gen_llm_move(board_state, side):
         exit(1)
       else:
         model_move_string = resp_dict['content'][0]['text'].strip()
-        if len(model_move_string) > 5: continue
+        if len(model_move_string) > 5:
+          error_feedback = f"\nYour previous response '{model_move_string}' was too long. Provide only the move notation."
+          continue
 
         generated_move = board_state.push_san(model_move_string)
         board_state.pop()  # Remove the move so we can return it instead
         return generated_move
+    except chess.IllegalMoveError as illegal_move:
+      error_feedback = f"\nYour previous move '{model_move_string}' was illegal: {str(illegal_move)}. Please generate a different legal move."
+      print(f"Attempt {attempt_count}: Illegal move '{model_move_string}', retrying...")
+      time.sleep(0.25)
     except Exception as model_response_fail:
-      print(model_response_fail)
-      time.sleep(0.5) 
+      error_feedback = f"\nYour previous response caused an error: {str(model_response_fail)}. Please provide a valid move in algebraic notation."
+      print(f"Attempt {attempt_count}: {model_response_fail}")
+      time.sleep(0.25)
 
   return None
 
@@ -101,7 +156,7 @@ def run_LLM_game():
 
   while(is_game_ongoing):
     if ai_turn:
-      current_move = gen_llm_move(game_board, ai_side)
+      current_move = gen_llm_move(game_board, ai_side, primary_model)
       game_board.push(current_move)
       ai_turn = False
       move_count += 1
@@ -110,9 +165,6 @@ def run_LLM_game():
       invalid_move = True
 
       while(invalid_move):
-        print("\n")
-        print(game_board)
-        print(f"Last move: {game_board.peek()}")
         try:
           current_move = game_board.push_san(move_input)
           invalid_move = False
@@ -120,16 +172,51 @@ def run_LLM_game():
           print('Invalid move!')
           invalid_move = True
 
+      print("\n")
+      print(game_board)
+      print(f"Last move: {game_board.peek()}")
       ai_turn = True
       move_count += 1
 
     is_game_ongoing = not game_board.is_game_over()
 
 
+def spectate_LLM_game():
 
+  move_count = 0
+  is_game_ongoing = True
+  game_board = chess.Board()
+  diff_model = True if secondary_model is not None else False
+
+  side_1 = 'white'
+  side_2 = 'black'
+
+  while(is_game_ongoing):
+
+
+    print("\n\n")
+    print(f"-{primary_model}-")
+    print(game_board)
+    if diff_model:
+      print(f"-{secondary_model}-")
+    else:
+      print(f"-{primary_model}-")
+
+    if move_count % 2 == 0:
+      current_move = gen_llm_move(game_board, side_1, primary_model)
+      game_board.push(current_move)
+    else:
+      if diff_model:
+        current_move = gen_llm_move(game_board, side_2, secondary_model)
+      else:
+        current_move = gen_llm_move(game_board, side_2, primary_model)
+      game_board.push(current_move)
+
+    move_count += 1
+
+    is_game_ongoing = not game_board.is_game_over()
+  
 
   
-  
-
 if __name__ == "__main__":
   menu_loop()
