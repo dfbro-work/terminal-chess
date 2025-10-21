@@ -8,6 +8,7 @@ import time
 load_dotenv()
 primary_model = os.getenv("MODEL")
 secondary_model = os.getenv("SECONDARY_MODEL")
+logging = True
 
 client = anthropic.Anthropic()
 
@@ -99,17 +100,23 @@ def gen_llm_move(board_state, side, given_model):
 
   attempt_count = 0
   error_feedback = ""
+  failed_moves = []
 
-  while attempt_count < 8: # Set a maximum attempt count to prevent wasting tokens on too many different attempts.
+  while attempt_count < 6: # Set a maximum attempt count to prevent wasting tokens on too many different attempts.
     attempt_count += 1
     prompt = base_prompt + error_feedback
+    if logging:
+      with open('game.txt', 'a') as f:
+        f.write(prompt)
+        f.write("\n")
 
     try:
       model_resp = client.messages.create(
         model = given_model,
-        max_tokens = 10,
+        max_tokens = 8,
         messages = [
-          {'role': 'user', 'content': prompt}
+          {'role': 'user', 'content': prompt},
+          {'role': 'assistant', 'content': "I need to respond in only standard chess notation (SAN) with a maximum length of 5 characters, so my next move is:"}
         ]
       )
 
@@ -119,6 +126,10 @@ def gen_llm_move(board_state, side, given_model):
         exit(1)
       else:
         model_move_string = resp_dict['content'][0]['text'].strip()
+        if logging:
+          with open('game.txt', 'a') as f:
+            f.write(model_move_string)
+            f.write("\n")
         if len(model_move_string) > 5:
           error_feedback = f"\nYour previous response '{model_move_string}' was too long. Provide only the move notation."
           continue
@@ -127,11 +138,18 @@ def gen_llm_move(board_state, side, given_model):
         board_state.pop()  # Remove the move so we can return it instead
         return generated_move
     except chess.IllegalMoveError as illegal_move:
-      error_feedback = f"\nYour previous move '{model_move_string}' was illegal: {str(illegal_move)}. Please generate a different legal move."
+      failed_moves.append(model_move_string)
+      failed_list = ", ".join(failed_moves)
+      error_feedback = f"\nYour previous move '{model_move_string}' was illegal: {str(illegal_move)}. Failed moves so far: [{failed_list}]. Please generate a different legal move."
       print(f"Attempt {attempt_count}: Illegal move '{model_move_string}', retrying...")
       time.sleep(0.25)
     except Exception as model_response_fail:
-      error_feedback = f"\nYour previous response caused an error: {str(model_response_fail)}. Please provide a valid move in algebraic notation."
+      if 'model_move_string' in locals():
+        failed_moves.append(model_move_string)
+        failed_list = ", ".join(failed_moves)
+        error_feedback = f"\nYour previous response '{model_move_string}' caused an error: {str(model_response_fail)}. Failed moves so far: [{failed_list}]. Please provide a valid move in algebraic notation."
+      else:
+        error_feedback = f"\nYour previous response caused an error: {str(model_response_fail)}. Please provide a valid move in algebraic notation."
       print(f"Attempt {attempt_count}: {model_response_fail}")
       time.sleep(0.25)
 
@@ -175,6 +193,7 @@ def run_LLM_game():
       print("\n")
       print(game_board)
       print(f"Last move: {game_board.peek()}")
+      print(move_count)
       ai_turn = True
       move_count += 1
 
@@ -182,6 +201,10 @@ def run_LLM_game():
 
 
 def spectate_LLM_game():
+
+  if logging:
+    with open('game.txt', 'w') as f:
+      f.write("START OF GAME\n")
 
   move_count = 0
   is_game_ongoing = True
@@ -213,10 +236,15 @@ def spectate_LLM_game():
       game_board.push(current_move)
 
     move_count += 1
-
+    print(move_count)
+    if logging:
+      with open('game.txt', 'a') as f:
+        f.write(f"{move_count}. {game_board.peek()}\n")
+        f.write("\n")
     is_game_ongoing = not game_board.is_game_over()
   
 
   
 if __name__ == "__main__":
   menu_loop()
+
