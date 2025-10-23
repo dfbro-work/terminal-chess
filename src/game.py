@@ -52,6 +52,11 @@ def run_game() -> int:
   game_board = chess.Board()
 
   with connect("ws://localhost:8080") as ws:
+    queue_type = input("Would you like to queue into quickplay or normal games? (quickplay/normal)")
+    while queue_type.lower() not in ['quickplay', 'normal']:
+      queue_type = input("Please enter a valid option! (quickplay/normal)")
+    ws.send(queue_type)
+
     success_msg = ws.recv()
     player_color = success_msg.split(" ")[-1]
     print(f"Player {player_color} is connected!")
@@ -85,7 +90,7 @@ def run_game() -> int:
         print(f"Last move: {move_input}")
         is_player_turn = True      
 
-return 0
+  return 0
 
 def gen_llm_move(board_state: chess.Board, side: str, given_model: str) -> chess.Move:
   base_prompt = f"You are playing a chess game on side: {side}. "

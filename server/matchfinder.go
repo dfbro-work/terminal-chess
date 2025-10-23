@@ -26,38 +26,81 @@ var upgrader = websocket.Upgrader{
 }
 
 var (
-	playerQueue []*player
-	queueMutex  sync.Mutex
+	quickplayQueue []*player
+	normalQueue    []*player
+	queueMutex     sync.Mutex
 )
 
-func checkForMatch() (*player, *player) {
+func checkForMatch() (*player, *player, string) {
 	queueMutex.Lock()
 	defer queueMutex.Unlock()
 
-	if len(playerQueue) >= 2 {
-		player_1 := playerQueue[0]
-		player_2 := playerQueue[1]
+	if len(quickplayQueue) >= 2 {
+		player_1 := quickplayQueue[0]
+		player_2 := quickplayQueue[1]
 
-		playerQueue = playerQueue[2:]
+		quickplayQueue = quickplayQueue[2:]
 
 		player_1.status = "playing"
 		player_2.status = "playing"
 
-		log.Print("Match found! Player 1 is ", player_1.id, " and player 2 is ", player_2.id)
-		return player_1, player_2
+		matchType := "quickplay"
+		log.Print("Match found in ", matchType, " queue! Player 1 is ", player_1.id, " and player 2 is ", player_2.id)
+		return player_1, player_2, matchType
+
+	} else if len(normalQueue) >= 2 {
+		player_1 := normalQueue[0]
+		player_2 := normalQueue[1]
+
+		normalQueue = normalQueue[2:]
+
+		player_1.status = "playing"
+		player_2.status = "playing"
+
+		matchType := "normal"
+		log.Print("Match found in ", matchType, " queue! Player 1 is ", player_1.id, " and player 2 is ", player_2.id)
+		return player_1, player_2, matchType
 	}
-	return nil, nil
+
+	return nil, nil, ""
 }
 
-func playGame(white *player, black *player) {
+func normalGame(white *player, black *player) {
 	currentTurn := white
 	nextTurn := black
+
+	for {
+		messageType, currentMove, err := currentTurn.conn.ReadMessage()
+		if err != nil {
+			log.Print("Error reading message: ", err)
+			return
+		}
+		if messageType == websocket.TextMessage {
+
+			log.Print("Received move: ", string(currentMove))
+			nextTurn.conn.WriteMessage(websocket.TextMessage, currentMove)
+
+			if currentTurn == white {
+				currentTurn = black
+				nextTurn = white
+			} else {
+				currentTurn = white
+				nextTurn = black
+			}
+		}
+	}
+
+}
+func quickplayGame(white *player, black *player) {
+	currentTurn := white
+	nextTurn := black
+
 	for {
 		timeout := time.After(time.Second * 60)
 		moveChan := make(chan []byte)
 
 		go func() {
-			_, message, err := nextTurn.conn.ReadMessage()
+			_, message, err := currentTurn.conn.ReadMessage()
 			if err == nil {
 				moveChan <- message
 			}
@@ -77,6 +120,10 @@ func playGame(white *player, black *player) {
 				websocket.FormatCloseMessage(4001, "Opponent timed out"),
 				time.Now().Add(time.Second))
 			currentTurn.conn.Close()
+
+			white.status = "waiting"
+			black.status = "waiting"
+
 			return
 		case move := <-moveChan:
 			log.Print("Received move: ", string(move))
@@ -91,6 +138,7 @@ func playGame(white *player, black *player) {
 		}
 	}
 }
+
 func main() {
 	fmt.Println("Starting matchfinder...")
 
@@ -107,18 +155,34 @@ func main() {
 			conn:   conn,
 		}
 
-		log.Print("New player connected: ", p.id)
-		queueMutex.Lock()
-		playerQueue = append(playerQueue, p)
-		queueMutex.Unlock()
+		_, queueType, err := p.conn.ReadMessage()
+		if err != nil {
+			log.Print("Error reading message: ", err)
+			return
+		}
+		if string(queueType) == "quickplay" {
+			log.Print("New player connected to quickplay queue: ", p.id)
+			queueMutex.Lock()
+			quickplayQueue = append(quickplayQueue, p)
+			queueMutex.Unlock()
+		} else if string(queueType) == "normal" {
+			log.Print("New player connected to normal queue: ", p.id)
+			queueMutex.Lock()
+			normalQueue = append(normalQueue, p)
+			queueMutex.Unlock()
+		}
 
-		player1, player2 := checkForMatch()
+		player1, player2, matchType := checkForMatch()
 
 		if player1 != nil && player2 != nil {
 			player1.conn.WriteMessage(websocket.TextMessage, []byte("Match found! Your color is: White"))
 			player2.conn.WriteMessage(websocket.TextMessage, []byte("Match found! Your color is: Black"))
 
-			go playGame(player1, player2)
+			if matchType == "quickplay" {
+				go quickplayGame(player1, player2)
+			} else if matchType == "normal" {
+				go normalGame(player1, player2)
+			}
 		}
 
 	})
