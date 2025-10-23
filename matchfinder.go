@@ -53,23 +53,41 @@ func playGame(white *player, black *player) {
 	currentTurn := white
 	nextTurn := black
 	for {
-		messageType, currentMove, err := currentTurn.conn.ReadMessage()
-		if err != nil {
-			log.Print("Error reading message: ", err)
+		timeout := time.After(time.Second * 60)
+		moveChan := make(chan []byte)
+
+		go func() {
+			_, message, err := nextTurn.conn.ReadMessage()
+			if err == nil {
+				moveChan <- message
+			}
+		}()
+
+		select {
+		case <-timeout:
+			log.Print("Timeout reached for player ", nextTurn.id)
+			// Send close frame to the player who timed out (with custom close code)
+			nextTurn.conn.WriteControl(websocket.CloseMessage,
+				websocket.FormatCloseMessage(4000, "You timed out"),
+				time.Now().Add(time.Second))
+			nextTurn.conn.Close()
+
+			// Send close frame to the opponent (who won)
+			currentTurn.conn.WriteControl(websocket.CloseMessage,
+				websocket.FormatCloseMessage(4001, "Opponent timed out"),
+				time.Now().Add(time.Second))
+			currentTurn.conn.Close()
 			return
-		}
-		if messageType != websocket.TextMessage {
-			log.Print("Invalid message type: ", messageType)
-			return
-		}
-		log.Print("Received move: ", string(currentMove))
-		nextTurn.conn.WriteMessage(websocket.TextMessage, currentMove)
-		if currentTurn == white {
-			currentTurn = black
-			nextTurn = white
-		} else {
-			currentTurn = white
-			nextTurn = black
+		case move := <-moveChan:
+			log.Print("Received move: ", string(move))
+			nextTurn.conn.WriteMessage(websocket.TextMessage, move)
+			if currentTurn == white {
+				currentTurn = black
+				nextTurn = white
+			} else {
+				currentTurn = white
+				nextTurn = black
+			}
 		}
 	}
 }
