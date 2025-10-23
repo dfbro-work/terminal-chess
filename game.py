@@ -4,6 +4,8 @@ import anthropic
 import os
 import sys
 import time
+from websockets.sync.client import connect
+import websockets
 
 load_dotenv()
 primary_model = os.getenv("MODEL")
@@ -47,7 +49,39 @@ def menu_loop():
 # Finds a game online using simple matchmaking
 
 def run_game():
-  return 0
+  game_board = chess.Board()
+
+  with connect("ws://localhost:8080") as ws:
+    success_msg = ws.recv()
+    player_color = success_msg.split(" ")[-1]
+    print(f"Player {player_color} is connected!")
+    is_player_turn = True if player_color == 'White' else False
+
+    while(not game_board.is_game_over()):
+      if is_player_turn:
+        print(game_board)
+        move_input = input("Enter a move in valid chess algebraic notation.")
+        invalid_move = True
+
+        while(invalid_move):
+          try:
+            current_move = game_board.push_san(move_input)
+            invalid_move = False
+          except chess.IllegalMoveError as error:
+            print('Invalid move!')
+            move_input = input("Enter a move in valid chess algebraic notation.")
+            invalid_move = True
+
+        print("\n")      
+        ws.send(current_move.uci())
+        is_player_turn = False
+      else:
+        move_input = ws.recv()
+        print(move_input)
+        game_board.push(chess.Move.from_uci(move_input))
+        print(game_board)
+        print(f"Last move: {move_input}")
+        is_player_turn = True
 
 
 def gen_llm_move(board_state: chess.Board, side: str, given_model: str) -> chess.Move:
