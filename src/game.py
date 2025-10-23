@@ -48,7 +48,7 @@ def menu_loop():
   
 # Finds a game online using simple matchmaking
 
-def run_game():
+def run_game() -> int:
   game_board = chess.Board()
 
   with connect("ws://localhost:8080") as ws:
@@ -67,7 +67,7 @@ def run_game():
           try:
             current_move = game_board.push_san(move_input)
             invalid_move = False
-          except chess.IllegalMoveError as error:
+          except (chess.IllegalMoveError, chess.InvalidMoveError) as error:
             print('Invalid move!')
             move_input = input("Enter a move in valid chess algebraic notation.")
             invalid_move = True
@@ -78,11 +78,14 @@ def run_game():
       else:
         move_input = ws.recv()
         print(move_input)
+        if move_input.lower() == 'opponent timed out':
+          return
         game_board.push(chess.Move.from_uci(move_input))
         print(game_board)
         print(f"Last move: {move_input}")
-        is_player_turn = True
+        is_player_turn = True      
 
+return 0
 
 def gen_llm_move(board_state: chess.Board, side: str, given_model: str) -> chess.Move:
   base_prompt = f"You are playing a chess game on side: {side}. "
