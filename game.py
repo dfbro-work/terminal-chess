@@ -50,7 +50,7 @@ def run_game():
   return 0
 
 
-def gen_llm_move(board_state, side, given_model):
+def gen_llm_move(board_state: chess.Board, side: str, given_model: str) -> chess.Move:
   base_prompt = f"You are playing a chess game on side: {side}. "
 
   # Build list of this side's current pieces
